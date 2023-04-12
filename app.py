@@ -11,7 +11,9 @@ app.config['SQLALCHEMY_ECHO'] = True
 app.config['SECRET_KEY'] = "shhhhh"
 app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = False
 
+login_manager = LoginManager()
 
+login_manager.init_app(app)
 
 @app.route('/')
 def home():
