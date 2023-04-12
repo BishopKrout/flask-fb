@@ -11,8 +11,6 @@ app.config['SQLALCHEMY_ECHO'] = True
 app.config['SECRET_KEY'] = "shhhhh"
 app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = False
 
-if __name__ == '__main__':
-    app.run(debug=True)
 
 
 @app.route('/')
@@ -154,3 +152,6 @@ def delete_feedback(feedback_id):
     db.session.delete(feedback)
     db.session.commit()
     return redirect(url_for('user_profile', username=feedback.username))
+
+if __name__ == '__main__':
+    app.run(debug=True)
