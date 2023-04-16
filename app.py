@@ -1,7 +1,8 @@
-from flask import Flask, render_template, redirect, url_for, flash
-from flask_login import LoginManager, login_user, current_user, login_required, logout_user
-from models import db, User, Feedback
+from flask import Flask, render_template, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from models import connect_db, db, User, Feedback
 from forms import RegistrationForm, LoginForm, FeedbackForm, DeleteUserForm, DeleteFeedbackForm
+from werkzeug.exceptions import Unauthorized
 
 app = Flask(__name__)
 
@@ -11,149 +12,171 @@ app.config['SQLALCHEMY_ECHO'] = True
 app.config['SECRET_KEY'] = "shhhhh"
 app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = False
 
-login_manager = LoginManager()
 
-login_manager.init_app(app)
+connect_db(app)
 
-@app.route('/')
-def home():
-    return redirect(url_for('register'))
+@app.route("/")
+def homepage():
+    """Homepage of site; redirect to register."""
+
+    return redirect("/register")
+
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    """Register a user: produce form and handle form submission."""
+
+    if "username" in session:
+        return redirect(f"/users/{session['username']}")
+
     form = RegistrationForm()
 
     if form.validate_on_submit():
         username = form.username.data
         password = form.password.data
-        email = form.email.data
         first_name = form.first_name.data
         last_name = form.last_name.data
-        
-        # Add your password hashing logic here (e.g., using bcrypt)
-        
-        user = User(username=username, password=password, email=email, first_name=first_name, last_name=last_name)
-        db.session.add(user)
+        email = form.email.data
+
+        user = User.register(username, password, first_name, last_name, email)
+
         db.session.commit()
+        session['username'] = user.username
 
-        login_user(user)
-        return redirect(url_for('user_profile', username=user.username))
+        return redirect(f"/users/{user.username}")
 
-    return render_template('users/register.html', form=form)
+    else:
+        return render_template("users/register.html", form=form)
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """Produce login form or handle login."""
+
+    if "username" in session:
+        return redirect(f"/users/{session['username']}")
+
     form = LoginForm()
 
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data).first()
+        username = form.username.data
+        password = form.password.data
 
-        # Add your password verification logic here (e.g., using bcrypt)
-        
-        if user and user.password == form.password.data:
-            login_user(user)
-            return redirect(url_for('secret'))
+        user = User.authenticate(username, password)  # <User> or False
+        if user:
+            session['username'] = user.username
+            return redirect(f"/users/{user.username}")
         else:
-            flash('Invalid username or password.', 'danger')
+            form.username.errors = ["Invalid username/password."]
+            return render_template("users/login.html", form=form)
 
-    login_user(user)
-    return redirect(url_for('user_profile', username=user.username))
+    return render_template("users/login.html", form=form)
 
-@app.route('/users/<username>')
-@login_required
-def user_profile(username):
-    user = User.query.filter_by(username=username).first()
 
-    if user and current_user.username == username:
-        return render_template('user_profile.html', user=user)
-    else:
-        flash("You don't have permission to access this profile.", 'danger')
-        return redirect(url_for('home'))
-
-@app.route('/logout')
-@login_required
+@app.route("/logout")
 def logout():
-    logout_user()
-    return redirect(url_for('home'))
+    """Logout route."""
 
-@app.route('/users/<username>')
-@login_required
-def user_profile(username):
-    user = User.query.filter_by(username=username).first()
-    delete_user_form = DeleteUserForm()
+    session.pop("username")
+    return redirect("/login")
 
-    if user and current_user.username == username:
-        feedbacks = Feedback.query.filter_by(username=username).all()
-        return render_template('user_profile.html', user=user, feedbacks=feedbacks, delete_user_form=delete_user_form)
-    else:
-        flash("You don't have permission to access this profile.", 'danger')
-        return redirect(url_for('home'))
 
-@app.route('/users/<username>/delete', methods=['POST'])
-@login_required
-def delete_user(username):
-    user = User.query.filter_by(username=username).first()
+@app.route("/users/<username>")
+def show_user(username):
+    """Example page for logged-in-users."""
 
-    if user and current_user.username == username:
-        Feedback.query.filter_by(username=username).delete()
-        db.session.delete(user)
-        db.session.commit()
-        logout_user()
-        return redirect(url_for('home'))
-    else:
-        flash("You don't have permission to delete this account.", 'danger')
-        return redirect(url_for('home'))
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
 
-@app.route('/users/<username>/feedback/add', methods=['GET', 'POST'])
-@login_required
-def add_feedback(username):
-    if current_user.username != username:
-        flash("You don't have permission to add feedback to this account.", 'danger')
-        return redirect(url_for('home'))
+    user = User.query.get(username)
+    form = DeleteUserForm()
+
+    return render_template("users/show.html", user=user, form=form)
+
+
+@app.route("/users/<username>/delete", methods=["POST"])
+def remove_user(username):
+    """Remove user nad redirect to login."""
+
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
+
+    user = User.query.get(username)
+    db.session.delete(user)
+    db.session.commit()
+    session.pop("username")
+
+    return redirect("/login")
+
+
+@app.route("/users/<username>/feedback/new", methods=["GET", "POST"])
+def new_feedback(username):
+    """Show add-feedback form and process it."""
+
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
 
     form = FeedbackForm()
 
     if form.validate_on_submit():
         title = form.title.data
         content = form.content.data
-        feedback = Feedback(title=title, content=content, username=username)
+
+        feedback = Feedback(
+            title=title,
+            content=content,
+            username=username,
+        )
+
         db.session.add(feedback)
         db.session.commit()
-        return redirect(url_for('user_profile', username=username))
 
-    return render_template('add_feedback.html', form=form)
+        return redirect(f"/users/{feedback.username}")
 
-@app.route('/feedback/<int:feedback_id>/update', methods=['GET', 'POST'])
-@login_required
+    else:
+        return render_template("feedback/new.html", form=form)
+
+
+@app.route("/feedback/<int:feedback_id>/update", methods=["GET", "POST"])
 def update_feedback(feedback_id):
+    """Show update-feedback form and process it."""
+
     feedback = Feedback.query.get(feedback_id)
 
-    if not feedback or current_user.username != feedback.username:
-        flash("You don't have permission to update this feedback.", 'danger')
-        return redirect(url_for('home'))
+    if "username" not in session or feedback.username != session['username']:
+        raise Unauthorized()
 
     form = FeedbackForm(obj=feedback)
 
     if form.validate_on_submit():
         feedback.title = form.title.data
         feedback.content = form.content.data
+
         db.session.commit()
-        return redirect(url_for('user_profile', username=feedback.username))
 
-    return render_template('update_feedback.html', form=form)
+        return redirect(f"/users/{feedback.username}")
 
-@app.route('/feedback/<int:feedback_id>/delete', methods=['POST'])
-@login_required
+    return render_template("/feedback/edit.html", form=form, feedback=feedback)
+
+
+@app.route("/feedback/<int:feedback_id>/delete", methods=["POST"])
 def delete_feedback(feedback_id):
+    """Delete feedback."""
+
     feedback = Feedback.query.get(feedback_id)
+    if "username" not in session or feedback.username != session['username']:
+        raise Unauthorized()
 
-    if not feedback or current_user.username != feedback.username:
-        flash("You don't have permission to delete this feedback.", 'danger')
-        return redirect(url_for('home'))
+    form = DeleteUserForm()
 
-    db.session.delete(feedback)
-    db.session.commit()
-    return redirect(url_for('user_profile', username=feedback.username))
+    if form.validate_on_submit():
+        db.session.delete(feedback)
+        db.session.commit()
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    return redirect(f"/users/{feedback.username}")
+
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    app.run()
